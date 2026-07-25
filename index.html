@@ -115,7 +115,7 @@
   const WORKSPACE = "canopi-home";
 
   const configured = !firebaseConfig.apiKey.startsWith("PASTE_");
-  window.__tt = { ready:false, configured };
+  window.__tt = { ready:false, configured, connecting: configured };
   if (configured) {
     try {
       const app = initializeApp(firebaseConfig);
@@ -129,10 +129,27 @@
         await setDoc(ref(key), { v:value, at:Date.now() });
         return true;
       };
-      window.__tt.ready = true;
-    } catch(e){ console.error("Firebase init failed", e); window.__tt.ready=false; }
+      // live connection test: try a real read; only then declare ready
+      (async () => {
+        try {
+          await getDoc(ref("__ping"));
+          window.__tt.ready = true;
+        } catch(e) {
+          console.error("Firestore connect failed", e);
+          window.__tt.ready = false;
+        } finally {
+          window.__tt.connecting = false;
+          window.dispatchEvent(new Event("tt-storage-ready"));
+        }
+      })();
+    } catch(e){
+      console.error("Firebase init failed", e);
+      window.__tt.ready=false; window.__tt.connecting=false;
+      window.dispatchEvent(new Event("tt-storage-ready"));
+    }
+  } else {
+    window.dispatchEvent(new Event("tt-storage-ready"));
   }
-  window.dispatchEvent(new Event("tt-storage-ready"));
 </script>
 </head>
 <body>
@@ -848,9 +865,14 @@ async function copySummary(){
   catch(e){prompt('Copy this summary:',txt);}
 }
 
-function bootTidyTime(){ loadAll(false).then(()=>modeBanner()); setInterval(()=>loadAll(false),60000); }
+let __booted=false;
+function bootTidyTime(){ if(__booted)return; __booted=true; loadAll(false).then(()=>modeBanner()); setInterval(()=>loadAll(false),60000); }
 if(window.__tt && (window.__tt.ready || window.__tt.configured===false)){ bootTidyTime(); }
-else { window.addEventListener('tt-storage-ready', bootTidyTime, {once:true}); setTimeout(bootTidyTime,3000); }
+else {
+  window.addEventListener('tt-storage-ready', bootTidyTime, {once:true});
+  // generous fallback in case the SDK never signals (bad network); 12s not 3s
+  setTimeout(bootTidyTime, 12000);
+}
 </script>
 </body>
 </html>
