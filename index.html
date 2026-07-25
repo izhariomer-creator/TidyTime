@@ -866,7 +866,8 @@ async function copySummary(){
 }
 
 let __booted=false;
-function bootTidyTime(){ if(__booted)return; __booted=true; loadAll(false).then(()=>modeBanner()); setInterval(()=>loadAll(false),60000); }
+function bootTidyTime(){ if(__booted)return; __booted=true;
+  try{ var vm=document.getElementById('verMode'); if(vm){ vm.textContent = (window.__tt && window.__tt.ready) ? '\u00b7 cloud synced \u2601\ufe0f' : '\u00b7 this phone only'; } }catch(e){} loadAll(false).then(()=>modeBanner()); setInterval(()=>loadAll(false),60000); }
 if(window.__tt && (window.__tt.ready || window.__tt.configured===false)){ bootTidyTime(); }
 else {
   window.addEventListener('tt-storage-ready', bootTidyTime, {once:true});
@@ -874,5 +875,8 @@ else {
   setTimeout(bootTidyTime, 12000);
 }
 </script>
+<div id="verTag" style="text-align:center;color:#B2A98E;font-size:11px;font-weight:600;margin-top:26px;padding-bottom:6px">
+  TidyTime v12 <span id="verMode">· …</span>
+</div>
 </body>
 </html>
