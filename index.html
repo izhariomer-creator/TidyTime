@@ -365,13 +365,13 @@ let tick=null, viewYM=null;
 
 function say(t,err){const m=document.getElementById('msg');m.textContent=t||'';m.className='msg'+(err?' err':'');if(t){setTimeout(()=>{if(m.textContent===t)m.textContent='';},4500);}}
 // --- storage adapter: Firebase cloud (shared across phones) first, else this-phone-only fallback ---
-const CLOUD = !!(window.__tt && window.__tt.ready);
+function CLOUD_ON(){ return !!(window.__tt && window.__tt.ready); }
 async function sGet(k,sh){
-  if(CLOUD){ try{return await window.__tt.get(k);}catch(e){return null;} }
+  if(CLOUD_ON()){ try{return await window.__tt.get(k);}catch(e){return null;} }
   try{const v=localStorage.getItem((sh?'S:':'P:')+k);return v?JSON.parse(v):null;}catch(e){return null;}
 }
 async function sSet(k,v,sh){
-  if(CLOUD){ try{return await window.__tt.set(k,v);}catch(e){return false;} }
+  if(CLOUD_ON()){ try{return await window.__tt.set(k,v);}catch(e){return false;} }
   try{localStorage.setItem((sh?'S:':'P:')+k,JSON.stringify(v));return true;}catch(e){return false;}
 }
 function ckGet(n){try{const m=document.cookie.match('(?:^|; )'+n+'=([^;]*)');return m?decodeURIComponent(m[1]):null;}catch(e){return null;}}
@@ -379,8 +379,10 @@ function ckSet(n,v){try{if(v===null)document.cookie=n+'=; max-age=0; path=/';els
 function roleGet(){ let r=null; try{r=JSON.parse(localStorage.getItem('P:tc:role'));}catch(e){} if(!r)r=ckGet('tcrole'); return r||null; }
 function roleSet(r){ try{ if(r===null) localStorage.removeItem('P:tc:role'); else localStorage.setItem('P:tc:role',JSON.stringify(r)); }catch(e){} ckSet('tcrole', r===null?null:r); }
 function modeBanner(){
-  if(CLOUD) return;
+  if(CLOUD_ON()) return;
+  if(document.getElementById('ttBanner'))return;
   const b=document.createElement('div');
+  b.id='ttBanner';
   b.style.cssText='background:#FFF4DC;border:1px solid #E3C77E;color:#7A5C14;border-radius:12px;padding:10px 12px;font-size:13px;font-weight:600;margin-bottom:12px;line-height:1.4';
   const why = (window.__tt && window.__tt.configured) ? 'Cloud sync could not connect right now \u2014 check the internet and reopen.' : 'Cloud sync is not set up yet \u2014 paste your Firebase keys into the file to sync across phones.';
   b.innerHTML='\ud83d\udcf1 <b>This-phone-only mode.</b> '+why;
@@ -746,12 +748,12 @@ async function punch(){
       else{
         sessions=(await sGet(K.sessions,true))||[];sessions.push(sess);
         const ok1=await sSet(K.sessions,sessions,true),ok2=await sSet(K.active,null,true);active=null;
-        say(ok1&&ok2?'Lovely! '+fmtH((sess.out-sess.in)/6e4)+' hours saved. \ud83c\udf1f':(CLOUD?'Could not save \u2014 check internet, then \u21bb Refresh.':'Could not save on this phone \u2014 storage is blocked.'),!(ok1&&ok2));
+        say(ok1&&ok2?'Lovely! '+fmtH((sess.out-sess.in)/6e4)+' hours saved. \ud83c\udf1f':(CLOUD_ON()?'Could not save \u2014 check internet, then \u21bb Refresh.':'Could not save on this phone \u2014 storage is blocked.'),!(ok1&&ok2));
       }
     }else{
       active={in:Date.now()};
       const ok=await sSet(K.active,active,true);
-      if(!ok){active=null;say(CLOUD?'Could not start \u2014 check internet and tap \u21bb.':'Could not save on this phone \u2014 storage is blocked. Check Chrome settings.',true);}else say('Have a great shift! \ud83d\udcaa');
+      if(!ok){active=null;say(CLOUD_ON()?'Could not start \u2014 check internet and tap \u21bb.':'Could not save on this phone \u2014 storage is blocked. Check Chrome settings.',true);}else say('Have a great shift! \ud83d\udcaa');
     }
   }finally{btn.disabled=false;render();}
 }
@@ -866,17 +868,24 @@ async function copySummary(){
 }
 
 let __booted=false;
-function bootTidyTime(){ if(__booted)return; __booted=true;
-  try{ var vm=document.getElementById('verMode'); if(vm){ vm.textContent = (window.__tt && window.__tt.ready) ? '\u00b7 cloud synced \u2601\ufe0f' : '\u00b7 this phone only'; } }catch(e){} loadAll(false).then(()=>modeBanner()); setInterval(()=>loadAll(false),60000); }
-if(window.__tt && (window.__tt.ready || window.__tt.configured===false)){ bootTidyTime(); }
+function updateVerMode(){
+  try{ var vm=document.getElementById('verMode'); if(vm){ vm.textContent = CLOUD_ON() ? '\u00b7 cloud synced \u2601\ufe0f' : '\u00b7 this phone only'; } }catch(e){}
+}
+function removeBannerIfSynced(){
+  if(CLOUD_ON()){ var b=document.getElementById('ttBanner'); if(b) b.remove(); }
+}
+function bootTidyTime(){ if(__booted)return; __booted=true; updateVerMode(); loadAll(false).then(()=>{modeBanner();removeBannerIfSynced();}); setInterval(()=>loadAll(false),60000); }
+// wait for the real connection result before first load, so writes go to the cloud
+if(window.__tt && (window.__tt.ready || (window.__tt.configured===false))){ bootTidyTime(); }
 else {
-  window.addEventListener('tt-storage-ready', bootTidyTime, {once:true});
-  // generous fallback in case the SDK never signals (bad network); 12s not 3s
+  window.addEventListener('tt-storage-ready', function(){ updateVerMode(); removeBannerIfSynced(); bootTidyTime(); }, {once:true});
   setTimeout(bootTidyTime, 12000);
 }
+// keep re-checking for a few seconds in case connection lands just after boot
+let __recheck=0; const __ri=setInterval(function(){ __recheck++; updateVerMode(); removeBannerIfSynced(); if(CLOUD_ON()||__recheck>10) clearInterval(__ri); }, 1000);
 </script>
 <div id="verTag" style="text-align:center;color:#B2A98E;font-size:11px;font-weight:600;margin-top:26px;padding-bottom:6px">
-  TidyTime v12 <span id="verMode">· …</span>
+  TidyTime v13 <span id="verMode">· …</span>
 </div>
 </body>
 </html>
