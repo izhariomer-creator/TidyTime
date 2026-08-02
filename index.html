@@ -226,6 +226,16 @@
     </div>
     <div class="msg" id="msg"></div>
 
+    <!-- Employer: live now -->
+    <div class="card hide" id="liveCard" style="background:linear-gradient(135deg,#2E6B4F,#245640);color:#fff;border:none">
+      <h2 style="color:#D9C489">Happening now &#129529;</h2>
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <span style="font-size:36px;font-weight:800;font-variant-numeric:tabular-nums" id="liveElapsed">0:00:00</span>
+        <span style="font-size:14px;opacity:.9" id="liveSince"></span>
+      </div>
+      <div style="font-size:13.5px;opacity:.9;margin-top:6px" id="liveLoc"></div>
+    </div>
+
     <!-- Employer: hero summary -->
     <div class="card hero hide" id="heroCard">
       <h2>This month so far</h2>
@@ -234,6 +244,8 @@
         <span><span class="huge" id="hTotal">&ndash;</span> <span class="unit">total</span></span>
       </div>
       <div class="breakdown" id="hBreak"></div>
+      <div style="margin-top:10px;background:rgba(255,255,255,.15);border-radius:99px;height:10px;overflow:hidden"><div id="hBar" style="height:100%;width:0%;background:#D9C489;border-radius:99px"></div></div>
+      <div style="font-size:12px;opacity:.85;margin-top:4px" id="hBarLbl"></div>
       <div class="unpaid" id="hUnpaid"></div>
     </div>
 
@@ -282,6 +294,18 @@
       <div id="profileInfo" class="empty">No details yet — they appear once your cleaner completes registration.</div>
       <img id="idThumb" class="hide" style="width:100%;border-radius:12px;border:1px solid var(--line);margin-top:10px" alt="ID document">
       <button class="btn ghost hide" id="idDeleteBtn" onclick="deleteId()">Remove ID photo</button>
+    </div>
+
+    <!-- Employer: documents -->
+    <div class="card hide" id="docsCard">
+      <h2>Documents &#128193;</h2>
+      <div id="docList"></div>
+      <label>Upload passport (photo)</label>
+      <input id="docPassport" type="file" accept="image/*">
+      <label>Upload signed contract (photo or PDF)</label>
+      <input id="docContract" type="file" accept="image/*,application/pdf">
+      <button class="btn primary" onclick="saveDocs()">Save documents</button>
+      <div style="font-size:12px;color:var(--mut);margin-top:6px">Photos are compressed automatically. PDFs must be under ~700&nbsp;KB.</div>
     </div>
 
     <!-- Employer: extra charges -->
@@ -337,6 +361,8 @@
         </div>
       </div>
       <button class="btn primary" onclick="saveSettings()">Save settings</button>
+      <button class="btn ghost" onclick="setHome()">\ud83c\udfe0 Set home location (use my current position)</button>
+      <div id="homeStatus" style="font-size:12.5px;color:var(--mut);margin-top:4px"></div>
       <button class="btn ghost" onclick="showMonths()">&#128198; All months &mdash; hours &amp; charges</button>
       
       <button class="btn ghost" onclick="copySummary()">&#128203; Copy month summary for WhatsApp</button>
@@ -358,10 +384,10 @@
 </div>
 
 <script>
-const K={sessions:'tc:sessions',active:'tc:active',settings:'tc:settings',charges:'tc:charges',profile:'tc:profile',role:'tc:role',payments:'tc:payments'};
+const K={sessions:'tc:sessions',active:'tc:active',settings:'tc:settings',charges:'tc:charges',profile:'tc:profile',role:'tc:role',payments:'tc:payments',docPassport:'tc:doc:passport',docContract:'tc:doc:contract'};
 let role=null,sessions=[],charges=[],payments=[],active=null,profile={},
     settings={cleanerName:'',employerName:'',rate:null,currency:'\u00a3',paidThrough:0};
-let tick=null, viewYM=null;
+let tick=null, viewYM=null, __punchBusy=false;
 
 function say(t,err){const m=document.getElementById('msg');m.textContent=t||'';m.className='msg'+(err?' err':'');if(t){setTimeout(()=>{if(m.textContent===t)m.textContent='';},4500);}}
 // --- storage adapter: Firebase cloud (shared across phones) first, else this-phone-only fallback ---
@@ -483,6 +509,7 @@ function showMonths(){document.getElementById('viewMain').classList.add('hide');
 function showMain(){document.getElementById('viewMonths').classList.add('hide');document.getElementById('viewMain').classList.remove('hide');}
 
 async function loadAll(manual){
+  if(__punchBusy && !manual) return;
   if(manual)say('Refreshing\u2026');
   sessions=(await sGet(K.sessions,true))||[];
   charges=(await sGet(K.charges,true))||[];
@@ -528,9 +555,22 @@ function render(){
   // role-based visibility (remark 3: employer has no punch button)
   document.getElementById('punchArea').classList.toggle('hide',role!=='cleaner');
   document.getElementById('heroCard').classList.toggle('hide',!isOwner);
+  const liveOn=isOwner&&active&&active.in;
+  document.getElementById('liveCard').classList.toggle('hide',!liveOn);
+  if(liveOn){
+    document.getElementById('liveSince').textContent=(settings.cleanerName||'Cleaner')+' clocked in at '+tLabel(active.in);
+    const h=homeLoc();
+    const ll=document.getElementById('liveLoc');
+    if(active.inLoc&&h){const d=distM(active.inLoc,h);ll.textContent=d<=300?'\ud83c\udfe0 Clocked in at your home':'\ud83d\udccd Clocked in '+(d<1000?d+' m':(d/1000).toFixed(1)+' km')+' from your home';}
+    else if(active.inLoc){ll.textContent='\ud83d\udccd Location recorded (set your home location below to compare)';}
+    else{ll.textContent='No location shared for this clock-in';}
+    if(active.in+12*3600*1000<Date.now()){ll.textContent+='  \u26a0\ufe0f over 12 hours \u2014 probably forgot to clock out';}
+  }
   document.getElementById('glanceCard').classList.toggle('hide',isOwner);
   document.getElementById('chargesCard').classList.toggle('hide',!isOwner);
   document.getElementById('paymentsCard').classList.toggle('hide',!isOwner);
+  document.getElementById('docsCard').classList.toggle('hide',!isOwner);
+  if(isOwner)renderDocs();
   document.getElementById('myDetailsCard').classList.toggle('hide',isOwner);
   document.getElementById('profileCard').classList.toggle('hide',!isOwner);
   if(!isOwner){
@@ -568,7 +608,13 @@ function render(){
       sub.textContent='Tap when you arrive';nw.classList.add('hide');
       document.getElementById('visitNote').value='';
     }
-  } else if(tick){clearInterval(tick);tick=null;}
+  } else {
+    if(tick){clearInterval(tick);tick=null;}
+    if(liveOn){
+      const updL=()=>{const el=document.getElementById('liveElapsed'); if(el&&active&&active.in)el.textContent=fmtDur(Date.now()-active.in);};
+      updL(); tick=setInterval(updL,1000);
+    }
+  }
 
   // viewed month bounds
   const now=new Date();
@@ -587,6 +633,9 @@ function render(){
     const c0=new Date(now.getFullYear(),now.getMonth(),1).getTime(), c1=new Date(now.getFullYear(),now.getMonth()+1,1).getTime();
     const cm=monthMins(c0,c1), ce=monthCharges(c0,c1);
     document.getElementById('hHours').textContent=fmtH(cm);
+    const pct=Math.min(100,Math.round(cm/60/100*100));
+    document.getElementById('hBar').style.width=pct+'%';
+    document.getElementById('hBarLbl').textContent=fmtH(cm)+' of 100 monthly hours used ('+pct+'%)';
     const lab=settings.rate?cm/60*settings.rate:null;
     document.getElementById('hTotal').textContent=lab!=null?money(lab+ce):'\u2013';
     document.getElementById('hBreak').textContent=lab!=null?
@@ -619,7 +668,7 @@ function render(){
     list.innerHTML=done.map(s=>{
       const dur=fmtH((s.out-s.in)/6e4);
       const del='<button class="del" onclick="delSession(\''+s.id+'\')">&#10005;</button>';
-      const fullyPaid=(settings.rate&&outstanding()<=0.005);const badges=(s.manual?'<span class="badge added">added</span>':'')+((s.in<=settings.paidThrough||fullyPaid)?'<span class="badge paid">paid</span>':'');
+      const fullyPaid=(settings.rate&&outstanding()<=0.005);const gps=isOwner?locBadge(s.inLoc):'';const badges=(s.manual?'<span class="badge added">added</span>':'')+((s.in<=settings.paidThrough||fullyPaid)?'<span class="badge paid">paid</span>':'')+gps;
       const note=s.note?'<div class="note">\ud83d\udcdd '+s.note.replace(/</g,'&lt;')+'</div>':'';
       return '<div class="row"><div><div class="d">'+dLabel(s.in)+badges+'</div><div class="t">'+tLabel(s.in)+' \u2013 '+tLabel(s.out)+'</div>'+note+'</div><div style="display:flex;align-items:center;gap:4px"><span class="h">'+dur+' h</span>'+del+'</div></div>';
     }).join('');
@@ -633,6 +682,7 @@ function render(){
       '<div class="row"><div><div class="d">'+dLabel(c.date)+'</div><div class="t">'+c.label.replace(/</g,'&lt;')+'</div></div>'+
       '<div style="display:flex;align-items:center;gap:4px"><span class="h">'+money(c.amount)+'</span><button class="del" onclick="delCharge(\''+c.id+'\')">&#10005;</button></div></div>'
     ).join(''):'<div class="empty">No extra charges in '+mlbl+'.</div>';
+    document.getElementById('homeStatus').textContent=(settings.homeLat?'\u2713 Home location is set':'Home location not set yet \u2014 tap the button while at home');
     document.getElementById('sOwner').value=settings.employerName||'';
     document.getElementById('sName').value=settings.cleanerName||'';
     document.getElementById('sRate').value=settings.rate||'';
@@ -717,18 +767,38 @@ async function delPayment(id){
   const ok=await sSet(K.payments,payments,true); say(ok?'Deleted \u2713':'Could not delete \u2014 try again.',!ok); render();
 }
 
+
+function distM(a,b){
+  if(!a||!b)return null;
+  const R=6371000,rad=x=>x*Math.PI/180;
+  const dLat=rad(b.lat-a.lat),dLng=rad(b.lng-a.lng);
+  const s=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2;
+  return Math.round(2*R*Math.asin(Math.sqrt(s)));
+}
+function homeLoc(){ return (settings.homeLat&&settings.homeLng)?{lat:settings.homeLat,lng:settings.homeLng}:null; }
+function locBadge(loc){
+  const h=homeLoc();
+  if(!loc)return '<span class="badge" style="color:#8A8272;border:1px solid #D5CEB9">no location</span>';
+  if(!h)return '';
+  const d=distM(loc,h);
+  if(d==null)return '';
+  if(d<=300)return '<span class="badge" style="color:#5B8E6E;border:1px solid #5B8E6E">\ud83c\udfe0 at home</span>';
+  const txt=d<1000?(d+' m away'):((d/1000).toFixed(1)+' km away');
+  return '<span class="badge" style="color:#B4513E;border:1px solid #B4513E">\ud83d\udccd '+txt+'</span>';
+}
+
 async function compressImage(file){
   return new Promise((resolve,reject)=>{
     const rd=new FileReader();
     rd.onload=()=>{const img=new Image();
       img.onload=()=>{
-        const MAX=1100; let w=img.width,h=img.height;
+        const MAX=900; let w=img.width,h=img.height;
         if(Math.max(w,h)>MAX){const k=MAX/Math.max(w,h);w=Math.round(w*k);h=Math.round(h*k);}
         const cv=document.createElement('canvas');cv.width=w;cv.height=h;
         cv.getContext('2d').drawImage(img,0,0,w,h);
-        let q=0.72, data=cv.toDataURL('image/jpeg',q);
-        while(data.length>4200000&&q>0.3){q-=0.12;data=cv.toDataURL('image/jpeg',q);}
-        if(data.length>4200000)reject(new Error('too big'));else resolve(data);
+        let q=0.6, data=cv.toDataURL('image/jpeg',q);
+        while(data.length>650000&&q>0.22){q-=0.08;data=cv.toDataURL('image/jpeg',q);}
+        if(data.length>650000)reject(new Error('too big'));else resolve(data);
       };
       img.onerror=()=>reject(new Error('bad image'));
       img.src=rd.result;};
@@ -736,14 +806,32 @@ async function compressImage(file){
     rd.readAsDataURL(file);
   });
 }
+function getGPS(){
+  return new Promise(res=>{
+    if(!navigator.geolocation){res(null);return;}
+    let done=false;
+    const to=setTimeout(()=>{if(!done){done=true;res(null);}},8000);
+    navigator.geolocation.getCurrentPosition(
+      p=>{if(!done){done=true;clearTimeout(to);res({lat:p.coords.latitude,lng:p.coords.longitude,acc:Math.round(p.coords.accuracy)});}},
+      ()=>{if(!done){done=true;clearTimeout(to);res(null);}},
+      {enableHighAccuracy:true,timeout:7000,maximumAge:60000});
+  });
+}
 async function punch(){
-  const btn=document.getElementById('punchBtn');btn.disabled=true;
+  if(__punchBusy)return;
+  __punchBusy=true;
+  const btn=document.getElementById('punchBtn'),tl=document.getElementById('punchTitle'),sb=document.getElementById('punchSub');
+  const prevT=tl.textContent, prevS=sb.textContent;
+  btn.disabled=true; tl.textContent='SAVING\u2026'; sb.textContent='One moment';
   try{
+    const loc=await getGPS();
     active=await sGet(K.active,true);
     if(active&&active.in){
       const note=document.getElementById('visitNote').value.trim();
       const sess={id:'s'+active.in,in:active.in,out:Date.now()};
       if(note)sess.note=note;
+      if(active.inLoc)sess.inLoc=active.inLoc;
+      if(loc)sess.outLoc=loc;
       if(sess.out-sess.in<6e4){await sSet(K.active,null,true);active=null;say('Cancelled \u2014 that was under a minute.');}
       else{
         sessions=(await sGet(K.sessions,true))||[];sessions.push(sess);
@@ -752,10 +840,11 @@ async function punch(){
       }
     }else{
       active={in:Date.now()};
+      if(loc)active.inLoc=loc;
       const ok=await sSet(K.active,active,true);
-      if(!ok){active=null;say(CLOUD_ON()?'Could not start \u2014 check internet and tap \u21bb.':'Could not save on this phone \u2014 storage is blocked. Check Chrome settings.',true);}else say('Have a great shift! \ud83d\udcaa');
+      if(!ok){active=null;say(CLOUD_ON()?'Could not start \u2014 check internet and tap \u21bb.':'Could not save on this phone \u2014 storage is blocked.',true);}else say('Have a great shift! \ud83d\udcaa');
     }
-  }finally{btn.disabled=false;render();}
+  }finally{__punchBusy=false;btn.disabled=false;tl.textContent=prevT;sb.textContent=prevS;render();}
 }
 
 async function addManual(){
@@ -807,6 +896,52 @@ async function delSession(id){
 }
 
 
+
+let __docsCache={};
+async function renderDocs(){
+  const el=document.getElementById('docList'); if(!el)return;
+  const items=[['docPassportKey','Passport',K.docPassport],['docContractKey','Signed contract',K.docContract]];
+  let html='';
+  for(const [id,label,key] of items){
+    if(!(key in __docsCache)){ try{__docsCache[key]=await sGet(key,true);}catch(e){__docsCache[key]=null;} }
+    const d=__docsCache[key];
+    if(d&&d.data){
+      const isPdf=(d.type==='pdf');
+      html+='<div class="row"><div><div class="d">'+label+'</div><div class="t">saved '+dLabel(d.at)+'</div></div>'+
+        '<div style="display:flex;align-items:center;gap:6px">'+
+        '<a href="'+d.data+'" download="'+label.replace(/ /g,'_')+(isPdf?'.pdf':'.jpg')+'" style="color:var(--gold);font-weight:700;font-size:13px">download</a>'+
+        '<button class="del" onclick="delDoc(\''+key+'\')">&#10005;</button></div></div>';
+      if(!isPdf) html+='<img src="'+d.data+'" style="width:100%;border-radius:12px;border:1px solid var(--line);margin:6px 0 10px" alt="'+label+'">';
+    } else {
+      html+='<div class="row"><div><div class="d">'+label+'</div><div class="t">not uploaded yet</div></div></div>';
+    }
+  }
+  el.innerHTML=html;
+}
+async function fileToDoc(f){
+  if(f.type==='application/pdf'){
+    if(f.size>700000) throw new Error('pdf too big');
+    const data=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej();r.readAsDataURL(f);});
+    return {type:'pdf',data:data,at:Date.now()};
+  }
+  const data=await compressImage(f);
+  return {type:'img',data:data,at:Date.now()};
+}
+async function saveDocs(){
+  const fp=document.getElementById('docPassport').files[0];
+  const fc=document.getElementById('docContract').files[0];
+  if(!fp&&!fc){say('Choose a file first.',true);return;}
+  try{
+    if(fp){const d=await fileToDoc(fp);const ok=await sSet(K.docPassport,d,true);if(!ok)throw new Error('save');__docsCache[K.docPassport]=d;}
+    if(fc){const d=await fileToDoc(fc);const ok=await sSet(K.docContract,d,true);if(!ok)throw new Error('save');__docsCache[K.docContract]=d;}
+    document.getElementById('docPassport').value='';document.getElementById('docContract').value='';
+    say('Documents saved \u2713'); renderDocs();
+  }catch(e){ say(e.message==='pdf too big'?'That PDF is too large \u2014 under 700 KB please, or upload a photo of it.':'Could not save \u2014 file may be too large.',true); }
+}
+async function delDoc(key){
+  if(!confirm('Remove this document?'))return;
+  await sSet(key,null,true); __docsCache[key]=null; renderDocs();
+}
 async function saveProfile(){
   const lp=(await sGet(K.profile,true))||{};
   profile=Object.assign({},lp,profile);
@@ -828,6 +963,17 @@ async function deleteId(){
   if(!confirm('Remove the ID photo from the app?'))return;
   delete profile.idImage; delete profile.idUploadedAt;
   await sSet(K.profile,profile,true);say('ID photo removed ✓');render();
+}
+
+async function setHome(){
+  say('Getting your position\u2026');
+  const loc=await getGPS();
+  if(!loc){say('Could not get your position \u2014 allow location access and try again.',true);return;}
+  const latest=(await sGet(K.settings,true))||{};
+  settings=Object.assign(settings,latest);
+  settings.homeLat=loc.lat; settings.homeLng=loc.lng;
+  const ok=await sSet(K.settings,settings,true);
+  say(ok?'Home location saved \u2713':'Could not save.',!ok);render();
 }
 async function saveSettings(){
   const latest=(await sGet(K.settings,true))||{};
@@ -856,13 +1002,28 @@ async function copySummary(){
   const ms=sessions.filter(s=>s.out&&s.in>=m0&&s.in<m1).sort((a,b)=>a.in-b.in);
   const cs=charges.filter(c=>c.date>=m0&&c.date<m1).sort((a,b)=>a.date-b.date);
   const mins=ms.reduce((a,s)=>a+(s.out-s.in)/6e4,0), ex=cs.reduce((a,c)=>a+c.amount,0);
-  let txt='\ud83e\uddf9 '+(settings.cleanerName||'Cleaner')+' \u2014 '+new Date(y,m,1).toLocaleDateString(undefined,{month:'long',year:'numeric'})+'\n';
-  ms.forEach(s=>{txt+=dLabel(s.in)+': '+tLabel(s.in)+'\u2013'+tLabel(s.out)+' = '+fmtH((s.out-s.in)/6e4)+'h'+(s.note?' ('+s.note+')':'')+'\n';});
-  if(cs.length){txt+='Extras:\n';cs.forEach(c=>{txt+=dLabel(c.date)+': '+c.label+' = '+money(c.amount)+'\n';});}
-  txt+='Hours: '+fmtH(mins);
-  if(settings.rate){txt+=' \u00d7 '+settings.currency+settings.rate+' = '+money(mins/60*settings.rate);
-    if(ex)txt+='\nExtras: '+money(ex);
-    txt+='\nTotal: '+money(mins/60*settings.rate+ex);}
+  const pms=payments.filter(p=>p.date>=m0&&p.date<m1).sort((a,b)=>a.date-b.date);
+  const paidMonth=pms.reduce((a,p)=>a+p.amount,0);
+  const pad=(s,n)=>{s=String(s);return s.length>=n?s:s+' '.repeat(n-s.length);};
+  let txt='\ud83e\uddf9 *'+(settings.cleanerName||'Cleaner')+' \u2014 '+new Date(y,m,1).toLocaleDateString(undefined,{month:'long',year:'numeric'})+'*\n';
+  txt+='```\n';
+  txt+=pad('Date',8)+pad('Time',13)+'Hours\n';
+  ms.forEach(s=>{
+    const d=new Date(s.in);
+    txt+=pad(d.getDate()+'/'+(d.getMonth()+1),8)+pad(tLabel(s.in)+'-'+tLabel(s.out),13)+fmtH((s.out-s.in)/6e4)+'\n';
+  });
+  txt+='-------------------------\n';
+  txt+=pad('Total hours',21)+fmtH(mins)+'\n';
+  if(settings.rate){
+    txt+=pad('Rate',21)+settings.currency+settings.rate+'/h\n';
+    txt+=pad('Hours cost',21)+money(mins/60*settings.rate)+'\n';
+    if(ex)txt+=pad('Extras',21)+money(ex)+'\n';
+    txt+=pad('TOTAL',21)+money(mins/60*settings.rate+ex)+'\n';
+    if(paidMonth)txt+=pad('Paid this month',21)+money(paidMonth)+'\n';
+    txt+=pad('Balance (all time)',21)+money(outstanding())+'\n';
+  }
+  txt+='```';
+  if(cs.length){txt+='\nExtras: '+cs.map(c=>c.label+' '+money(c.amount)).join(', ');}
   try{await navigator.clipboard.writeText(txt);say('Copied \u2014 paste into WhatsApp \ud83d\udcac');}
   catch(e){prompt('Copy this summary:',txt);}
 }
@@ -885,7 +1046,7 @@ else {
 let __recheck=0; const __ri=setInterval(function(){ __recheck++; updateVerMode(); removeBannerIfSynced(); if(CLOUD_ON()||__recheck>10) clearInterval(__ri); }, 1000);
 </script>
 <div id="verTag" style="text-align:center;color:#B2A98E;font-size:11px;font-weight:600;margin-top:26px;padding-bottom:6px">
-  TidyTime v13 <span id="verMode">· …</span>
+  TidyTime v14 <span id="verMode">· …</span>
 </div>
 </body>
 </html>
