@@ -154,6 +154,25 @@
 </head>
 <body>
 
+
+<div class="overlay hide" id="pinScreen">
+  <div class="logo">&#128274;</div>
+  <h1>Employer PIN</h1>
+  <p>Enter the 4-digit employer PIN to continue.</p>
+  <div style="width:100%;max-width:260px;text-align:left">
+    <input id="pinInput" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" placeholder="&#8226;&#8226;&#8226;&#8226;" style="text-align:center;font-size:28px;letter-spacing:12px">
+    <div id="pinMsg" style="min-height:20px;font-size:13.5px;color:var(--brick);font-weight:700;text-align:center;margin-top:8px"></div>
+    <button class="btn primary" onclick="pinSubmit()">Unlock &#10142;</button>
+    <button class="btn ghost" onclick="pinCancel()">&#8592; Back</button>
+  </div>
+</div>
+
+<div class="overlay hide" id="lockScreen" style="background:#26221B;color:#fff">
+  <div class="logo">&#9203;</div>
+  <h1 style="color:#fff">Locked</h1>
+  <p style="color:#CFC7B4">Too many wrong PIN attempts.<br>The app is paused on this phone.</p>
+  <div id="lockTimer" style="font-size:40px;font-weight:800;font-variant-numeric:tabular-nums">10:00</div>
+</div>
 <div class="overlay" id="rolePick">
   <div class="logo">&#129529;</div>
   <h1>TidyTime</h1>
@@ -226,6 +245,13 @@
     </div>
     <div class="msg" id="msg"></div>
 
+    <!-- Employer: security alert -->
+    <div class="card hide" id="secCard" style="background:#FCEBE7;border:1px solid #B4513E">
+      <h2 style="color:#B4513E">Security alert &#9888;&#65039;</h2>
+      <div id="secList" style="font-size:14px"></div>
+      <button class="btn ghost" onclick="clearSec()">Dismiss alerts</button>
+    </div>
+
     <!-- Employer: live now -->
     <div class="card hide" id="liveCard" style="background:linear-gradient(135deg,#2E6B4F,#245640);color:#fff;border:none">
       <h2 style="color:#D9C489">Happening now &#129529;</h2>
@@ -295,11 +321,6 @@
       <img id="idThumb" class="hide" style="width:100%;border-radius:12px;border:1px solid var(--line);margin-top:10px" alt="ID document">
       <button class="btn ghost hide" id="idDeleteBtn" onclick="deleteId()">Remove ID photo</button>
     </div>
-
-    <!-- Employer: documents -->
-    <div class="card hide" id="docsCard">
-      <h2>Documents &#128193;</h2>
-      <div id="docList"></div>
       <label>Upload passport (photo)</label>
       <input id="docPassport" type="file" accept="image/*">
       <label>Upload signed contract (photo or PDF)</label>
@@ -361,12 +382,19 @@
         </div>
       </div>
       <button class="btn primary" onclick="saveSettings()">Save settings</button>
-      <button class="btn ghost" onclick="setHome()">\ud83c\udfe0 Set home location (use my current position)</button>
+      <button class="btn ghost" onclick="setHome()">&#127968; Set home location (use my current position)</button>
+      <button class="btn ghost" onclick="changePin()">&#128274; Change employer PIN</button>
       <div id="homeStatus" style="font-size:12.5px;color:var(--mut);margin-top:4px"></div>
       <button class="btn ghost" onclick="showMonths()">&#128198; All months &mdash; hours &amp; charges</button>
       
       <button class="btn ghost" onclick="copySummary()">&#128203; Copy month summary for WhatsApp</button>
     </div>
+
+
+    <!-- Employer: documents -->
+    <div class="card hide" id="docsCard">
+      <h2>Documents &#128193;</h2>
+      <div id="docList"></div>
   </div>
 
   <!-- ================= MONTHS TABLE VIEW ================= -->
@@ -384,7 +412,7 @@
 </div>
 
 <script>
-const K={sessions:'tc:sessions',active:'tc:active',settings:'tc:settings',charges:'tc:charges',profile:'tc:profile',role:'tc:role',payments:'tc:payments',docPassport:'tc:doc:passport',docContract:'tc:doc:contract'};
+const K={sessions:'tc:sessions',active:'tc:active',settings:'tc:settings',charges:'tc:charges',profile:'tc:profile',role:'tc:role',payments:'tc:payments',docPassport:'tc:doc:passport',docContract:'tc:doc:contract',security:'tc:security'};
 let role=null,sessions=[],charges=[],payments=[],active=null,profile={},
     settings={cleanerName:'',employerName:'',rate:null,currency:'\u00a3',paidThrough:0};
 let tick=null, viewYM=null, __punchBusy=false;
@@ -415,11 +443,110 @@ function modeBanner(){
   const app=document.getElementById('app'); app.insertBefore(b, app.children[1]);
 }
 
+
+// ===== Employer PIN & lockout =====
+async function sha(s){
+  try{
+    const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('tt:'+s));
+    return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  }catch(e){return 'plain:'+s;}
+}
+function lockGet(){ const v=parseInt(ckGet('ttlock')||localStorage.getItem('P:ttlock')||'0'); return isNaN(v)?0:v; }
+function lockSet(until){ try{localStorage.setItem('P:ttlock',String(until));}catch(e){} ckSet('ttlock',String(until)); }
+function failsGet(){ const v=parseInt(ckGet('ttfails')||localStorage.getItem('P:ttfails')||'0'); return isNaN(v)?0:v; }
+function failsSet(n){ try{localStorage.setItem('P:ttfails',String(n));}catch(e){} ckSet('ttfails',String(n)); }
+let __lockTick=null;
+function showLock(){
+  document.getElementById('lockScreen').classList.remove('hide');
+  ['rolePick','regScreen','pinScreen','app'].forEach(id=>document.getElementById(id).classList.add('hide'));
+  if(__lockTick)clearInterval(__lockTick);
+  const upd=()=>{
+    const left=lockGet()-Date.now();
+    if(left<=0){clearInterval(__lockTick);__lockTick=null;document.getElementById('lockScreen').classList.add('hide');failsSet(0);location.reload();return;}
+    const m=Math.floor(left/60000),s=Math.floor(left%60000/1000);
+    document.getElementById('lockTimer').textContent=m+':'+String(s).padStart(2,'0');
+  };
+  upd(); __lockTick=setInterval(upd,1000);
+}
+function lockedNow(){ return lockGet()>Date.now(); }
+let __pinNext=null;
+function askPin(next){
+  __pinNext=next;
+  if(lockedNow()){showLock();return;}
+  document.getElementById('rolePick').classList.add('hide');
+  document.getElementById('pinScreen').classList.remove('hide');
+  document.getElementById('pinInput').value='';
+  document.getElementById('pinMsg').textContent='';
+  setTimeout(()=>{try{document.getElementById('pinInput').focus();}catch(e){}},100);
+}
+function pinCancel(){
+  document.getElementById('pinScreen').classList.add('hide');
+  document.getElementById('rolePick').classList.remove('hide');
+}
+async function pinSubmit(){
+  if(lockedNow()){showLock();return;}
+  const v=document.getElementById('pinInput').value.trim();
+  if(!/^\d{4}$/.test(v)){document.getElementById('pinMsg').textContent='4 digits please.';return;}
+  const h=await sha(v);
+  const latest=(await sGet(K.settings,true))||{};
+  settings=Object.assign(settings,latest);
+  if(h===settings.empPinHash){
+    failsSet(0);
+    document.getElementById('pinScreen').classList.add('hide');
+    const fn=__pinNext; __pinNext=null;
+    if(fn)fn();
+  } else {
+    const f=failsGet()+1; failsSet(f);
+    if(f>=5){
+      lockSet(Date.now()+10*60*1000);
+      try{
+        const ev=(await sGet(K.security,true))||[];
+        ev.push({t:Date.now(),type:'pin5'});
+        await sSet(K.security,ev.slice(-20),true);
+      }catch(e){}
+      showLock();
+    } else {
+      document.getElementById('pinMsg').textContent='Wrong PIN ('+f+' of 5). '+(5-f)+' tries left.';
+      document.getElementById('pinInput').value='';
+    }
+  }
+}
+async function createPinFlow(after){
+  let p1=prompt('Create your 4-digit employer PIN:');
+  if(p1===null){after();return;}
+  p1=(p1||'').trim();
+  if(!/^\d{4}$/.test(p1)){alert('PIN must be exactly 4 digits. Try again from Employer corner.');after();return;}
+  const p2=(prompt('Type the PIN again to confirm:')||'').trim();
+  if(p1!==p2){alert('PINs did not match. You can set it later from Employer corner.');after();return;}
+  const latest=(await sGet(K.settings,true))||{};
+  settings=Object.assign(settings,latest);
+  settings.empPinHash=await sha(p1);
+  await sSet(K.settings,settings,true);
+  say('Employer PIN set \u2713');
+  after();
+}
+async function changePin(){
+  if(settings.empPinHash){
+    const cur=(prompt('Enter your current PIN:')||'').trim();
+    if(await sha(cur)!==settings.empPinHash){say('Wrong current PIN.',true);return;}
+  }
+  await createPinFlow(()=>{});
+}
+
 let pendingRole=null;
 async function startReg(r){
-  pendingRole=r;
   settings=Object.assign(settings,(await sGet(K.settings,true))||{});
   profile=Object.assign(profile,(await sGet(K.profile,true))||{});
+  if(r==='owner'){
+    if(lockedNow()){showLock();return;}
+    if(settings.empPinHash){ askPin(()=>startRegInner('owner')); return; }
+    // no PIN yet: let the employer in, then immediately create one
+    startRegInner('owner'); return;
+  }
+  startRegInner(r);
+}
+async function startRegInner(r){
+  pendingRole=r;
   document.getElementById('rolePick').classList.add('hide');
   const reg=document.getElementById('regScreen'); reg.classList.remove('hide');
   const ownerF=document.getElementById('regOwnerFields');
@@ -502,6 +629,7 @@ async function finishReg(){
   document.getElementById('regScreen').classList.add('hide');
   document.getElementById('app').classList.remove('hide');
   render();
+  if(role==='owner' && !settings.empPinHash){ setTimeout(()=>createPinFlow(()=>{}),400); }
 }
 async function resetRole(){roleSet(null);await sSet(K.role,null,false);location.reload();}
 
@@ -570,7 +698,7 @@ function render(){
   document.getElementById('chargesCard').classList.toggle('hide',!isOwner);
   document.getElementById('paymentsCard').classList.toggle('hide',!isOwner);
   document.getElementById('docsCard').classList.toggle('hide',!isOwner);
-  if(isOwner)renderDocs();
+  if(isOwner){renderDocs();renderSec();}
   document.getElementById('myDetailsCard').classList.toggle('hide',isOwner);
   document.getElementById('profileCard').classList.toggle('hide',!isOwner);
   if(!isOwner){
@@ -898,6 +1026,21 @@ async function delSession(id){
 
 
 let __docsCache={};
+
+let secEvents=[];
+async function renderSec(){
+  const card=document.getElementById('secCard'); if(!card)return;
+  try{secEvents=(await sGet(K.security,true))||[];}catch(e){secEvents=[];}
+  if(role==='owner' && secEvents.length){
+    card.classList.remove('hide');
+    document.getElementById('secList').innerHTML=secEvents.slice(-5).reverse().map(e=>
+      '<div class="row"><div><div class="d">5 wrong PIN attempts</div><div class="t">'+new Date(e.t).toLocaleString()+' \u00b7 app was locked 10 min on that phone</div></div></div>'
+    ).join('');
+  } else card.classList.add('hide');
+}
+async function clearSec(){
+  await sSet(K.security,[],true); secEvents=[]; renderSec();
+}
 async function renderDocs(){
   const el=document.getElementById('docList'); if(!el)return;
   const items=[['docPassportKey','Passport',K.docPassport],['docContractKey','Signed contract',K.docContract]];
@@ -1035,7 +1178,7 @@ function updateVerMode(){
 function removeBannerIfSynced(){
   if(CLOUD_ON()){ var b=document.getElementById('ttBanner'); if(b) b.remove(); }
 }
-function bootTidyTime(){ if(__booted)return; __booted=true; updateVerMode(); loadAll(false).then(()=>{modeBanner();removeBannerIfSynced();}); setInterval(()=>loadAll(false),60000); }
+function bootTidyTime(){ if(__booted)return; __booted=true; if(lockedNow()){showLock();return;} updateVerMode(); loadAll(false).then(()=>{modeBanner();removeBannerIfSynced();}); setInterval(()=>loadAll(false),60000); }
 // wait for the real connection result before first load, so writes go to the cloud
 if(window.__tt && (window.__tt.ready || (window.__tt.configured===false))){ bootTidyTime(); }
 else {
@@ -1046,7 +1189,7 @@ else {
 let __recheck=0; const __ri=setInterval(function(){ __recheck++; updateVerMode(); removeBannerIfSynced(); if(CLOUD_ON()||__recheck>10) clearInterval(__ri); }, 1000);
 </script>
 <div id="verTag" style="text-align:center;color:#B2A98E;font-size:11px;font-weight:600;margin-top:26px;padding-bottom:6px">
-  TidyTime v14 <span id="verMode">· …</span>
+  TidyTime v15 <span id="verMode">· …</span>
 </div>
 </body>
 </html>
