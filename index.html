@@ -173,6 +173,12 @@
   <p style="color:#CFC7B4">Too many wrong PIN attempts.<br>The app is paused on this phone.</p>
   <div id="lockTimer" style="font-size:40px;font-weight:800;font-variant-numeric:tabular-nums">10:00</div>
 </div>
+<div class="overlay hide" id="kickScreen">
+  <div class="logo">&#128241;</div>
+  <h1>Not linked</h1>
+  <p>This phone is no longer linked to TidyTime.<br>If you work here, ask your employer for a new code.</p>
+  <button class="rolebtn cleaner" onclick="kickBack()">OK</button>
+</div>
 <div class="overlay" id="rolePick">
   <div class="logo">&#129529;</div>
   <h1>TidyTime</h1>
@@ -188,6 +194,10 @@
   <div style="width:100%;max-width:320px;text-align:left">
     <label>Your name</label>
     <input id="rMyName" placeholder="e.g. Maria">
+    <div id="regInviteWrap" class="hide">
+      <label>Code from your employer</label>
+      <input id="rInvite" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" placeholder="4 digits" style="letter-spacing:6px">
+    </div>
     <div id="regCleanerFields" class="hide">
       <label>Phone</label>
       <input id="rPhone" type="tel" inputmode="tel" placeholder="e.g. 07…">
@@ -321,13 +331,6 @@
       <img id="idThumb" class="hide" style="width:100%;border-radius:12px;border:1px solid var(--line);margin-top:10px" alt="ID document">
       <button class="btn ghost hide" id="idDeleteBtn" onclick="deleteId()">Remove ID photo</button>
     </div>
-      <label>Upload passport (photo)</label>
-      <input id="docPassport" type="file" accept="image/*">
-      <label>Upload signed contract (photo or PDF)</label>
-      <input id="docContract" type="file" accept="image/*,application/pdf">
-      <button class="btn primary" onclick="saveDocs()">Save documents</button>
-      <div style="font-size:12px;color:var(--mut);margin-top:6px">Photos are compressed automatically. PDFs must be under ~700&nbsp;KB.</div>
-    </div>
 
     <!-- Employer: extra charges -->
     <div class="card hide" id="chargesCard">
@@ -384,17 +387,41 @@
       <button class="btn primary" onclick="saveSettings()">Save settings</button>
       <button class="btn ghost" onclick="setHome()">&#127968; Set home location (use my current position)</button>
       <button class="btn ghost" onclick="changePin()">&#128274; Change employer PIN</button>
+      <button class="btn ghost" onclick="newCleanerCode(false)">&#128241; New code for cleaner's phone</button>
       <div id="homeStatus" style="font-size:12.5px;color:var(--mut);margin-top:4px"></div>
       <button class="btn ghost" onclick="showMonths()">&#128198; All months &mdash; hours &amp; charges</button>
       
       <button class="btn ghost" onclick="copySummary()">&#128203; Copy month summary for WhatsApp</button>
+      <button class="btn ghost" onclick="showArchives()">&#128451;&#65039; Past cleaners</button>
+      <button class="btn ghost" style="color:var(--brick);border-color:#E3B9AE" onclick="archiveCleaner()">&#128075; Cleaner left: save her history &amp; start a new cleaner</button>
     </div>
-
 
     <!-- Employer: documents -->
     <div class="card hide" id="docsCard">
       <h2>Documents &#128193;</h2>
       <div id="docList"></div>
+      <label>Upload passport (photo)</label>
+      <input id="docPassport" type="file" accept="image/*">
+      <label>Upload signed contract (photo or PDF)</label>
+      <input id="docContract" type="file" accept="image/*,application/pdf">
+      <button class="btn primary" onclick="saveDocs()">Save documents</button>
+      <div style="font-size:12px;color:var(--mut);margin-top:6px">Photos are compressed automatically. PDFs must be under ~700&nbsp;KB.</div>
+    </div>
+  </div>
+
+  <!-- ================= PAST CLEANERS VIEW ================= -->
+  <div id="viewArchives" class="hide">
+    <button class="back" onclick="showMain()">&#8592; Back</button>
+    <div class="card">
+      <h2>Past cleaners</h2>
+      <div id="archList"><div class="empty">No past cleaners yet.</div></div>
+    </div>
+  </div>
+
+  <!-- ================= ONE PAST CLEANER VIEW ================= -->
+  <div id="viewArchive" class="hide">
+    <button class="back" onclick="showArchives()">&#8592; Past cleaners</button>
+    <div id="archDetail"></div>
   </div>
 
   <!-- ================= MONTHS TABLE VIEW ================= -->
@@ -533,6 +560,43 @@ async function changePin(){
   await createPinFlow(()=>{});
 }
 
+// ===== Cleaner phone link: only the registered cleaner's phone sees the data =====
+function myDev(){
+  let d=null; try{d=localStorage.getItem('P:ttdev');}catch(e){} if(!d)d=ckGet('ttdev');
+  if(!d){ d='d'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); try{localStorage.setItem('P:ttdev',d);}catch(e){} }
+  ckSet('ttdev',d); return d;
+}
+// 'ok' = this phone is the linked cleaner phone, 'code' = slot free, needs employer code,
+// 'claim' = old setup with no link yet (first v16 run), 'taken' = linked to another phone
+function cleanerAccess(st){
+  if(st.cleanerDevice&&st.cleanerDevice===myDev())return 'ok';
+  if(st.cleanerDevice)return 'taken';
+  if(st.inviteHash)return 'code';
+  if(st.cleanerDevice===undefined)return 'claim';
+  return 'code';
+}
+function kickPhone(){
+  roleSet(null); role=null;
+  ['app','regScreen','rolePick','pinScreen'].forEach(id=>document.getElementById(id).classList.add('hide'));
+  sessions=[];charges=[];payments=[];profile={};active=null;
+  document.getElementById('kickScreen').classList.remove('hide');
+}
+function kickBack(){document.getElementById('kickScreen').classList.add('hide');document.getElementById('rolePick').classList.remove('hide');}
+async function newCleanerCode(silentIntro){
+  if(!silentIntro&&!confirm('Create a new code for the cleaner\'s phone?\n\nThe phone currently linked will be logged out. Use this when a new cleaner starts or your cleaner changes phone.'))return false;
+  let c=prompt('Choose a 4 digit code to give your cleaner:');
+  if(c===null)return false; c=(c||'').trim();
+  if(!/^\d{4}$/.test(c)){alert('Code must be exactly 4 digits.');return false;}
+  const latest=(await sGet(K.settings,true))||{};
+  settings=Object.assign(settings,latest);
+  settings.inviteHash=await sha('invite:'+c);
+  settings.cleanerDevice=null;
+  const ok=await sSet(K.settings,settings,true);
+  if(!ok){alert('Could not save the code, check internet and try again.');return false;}
+  alert('Code '+c+' is ready.\n\nGive it to your cleaner. She opens the app, taps "I clean here" and types it in. It works once, on one phone. Any other phone is locked out.');
+  return true;
+}
+
 let pendingRole=null;
 async function startReg(r){
   settings=Object.assign(settings,(await sGet(K.settings,true))||{});
@@ -543,6 +607,9 @@ async function startReg(r){
     // no PIN yet: let the employer in, then immediately create one
     startRegInner('owner'); return;
   }
+  const acc=cleanerAccess(settings);
+  if(acc==='taken'){kickPhone();return;}
+  if(acc==='code'){profile={};}
   startRegInner(r);
 }
 async function startRegInner(r){
@@ -565,13 +632,18 @@ async function startRegInner(r){
     document.getElementById('rCur').value=settings.currency||'\u00a3';
   } else {
     ownerF.classList.add('hide');
-    const returning = !!(profile.phone && profile.consentAt);
+    const needCode = cleanerAccess(settings)==='code';
+    document.getElementById('regInviteWrap').classList.toggle('hide',!needCode);
+    document.getElementById('regInviteWrap').dataset.need=needCode?'1':'';
+    document.getElementById('rInvite').value='';
+    if(needCode){settings.cleanerName=settings.cleanerName||'';}
+    const returning = !needCode && !!(profile.phone && profile.consentAt);
     document.getElementById('regCleanerFields').classList.toggle('hide', returning);
     document.getElementById('rPhone').value=profile.phone||'';
     document.getElementById('rEmail').value=profile.email||'';
     document.getElementById('rAddress').value=profile.address||'';
     document.getElementById('rIdStatus').textContent=profile.idImage?'✓ ID already on file — choose a file only to replace it.':'';
-    document.getElementById('rMyName').placeholder='e.g. Maria';
+    document.getElementById('rMyName').placeholder='Your full name';
     document.getElementById('rMyName').value=settings.cleanerName||'';
     if(settings.cleanerName){
       document.getElementById('regTitle').textContent='Welcome back'+(returning?', '+settings.cleanerName:'')+'! \ud83d\udc4b';
@@ -579,7 +651,7 @@ async function startRegInner(r){
       document.getElementById('regGo').innerHTML='Yes, that\u2019s me \u2794';
     } else {
       document.getElementById('regTitle').textContent='Nice to meet you! \ud83d\udc4b';
-      document.getElementById('regSub').textContent='Just your name and you\u2019re in.';
+      document.getElementById('regSub').textContent='Please fill in your name and details.';
       document.getElementById('regGo').innerHTML='Save &amp; start \u2794';
     }
   }
@@ -602,7 +674,22 @@ async function finishReg(){
     const rr=parseFloat(document.getElementById('rRate').value); if(rr)settings.rate=rr;
     settings.currency=document.getElementById('rCur').value;
   } else {
-    const returning = !!(profile.phone && profile.consentAt);
+    const acc=cleanerAccess(settings);
+    if(acc==='taken'){kickPhone();return;}
+    if(acc==='code'){
+      if(lockedNow()){showLock();return;}
+      const c=document.getElementById('rInvite').value.trim();
+      if(!/^\d{4}$/.test(c)){alert('Please type the 4 digit code from your employer.');return;}
+      if(await sha('invite:'+c)!==settings.inviteHash){
+        const f=failsGet()+1; failsSet(f);
+        if(f>=5){lockSet(Date.now()+10*60*1000);try{const ev=(await sGet(K.security,true))||[];ev.push({t:Date.now(),type:'code5'});await sSet(K.security,ev.slice(-20),true);}catch(e){}showLock();return;}
+        alert('Wrong code ('+f+' of 5).');return;
+      }
+      failsSet(0);
+      profile=(await sGet(K.profile,true))||{};
+    }
+    settings.cleanerDevice=myDev(); settings.inviteHash=null;
+    const returning = acc!=='code' && !!(profile.phone && profile.consentAt);
     if(!returning){
       if(!document.getElementById('rConsent').checked){alert('Please tick the consent box so your details can be stored.');return;}
       const ph=document.getElementById('rPhone').value.trim();
@@ -633,8 +720,10 @@ async function finishReg(){
 }
 async function resetRole(){roleSet(null);await sSet(K.role,null,false);location.reload();}
 
-function showMonths(){document.getElementById('viewMain').classList.add('hide');document.getElementById('viewMonths').classList.remove('hide');renderMonths();}
-function showMain(){document.getElementById('viewMonths').classList.add('hide');document.getElementById('viewMain').classList.remove('hide');}
+const VIEWS=['viewMain','viewMonths','viewArchives','viewArchive'];
+function showView(v){VIEWS.forEach(id=>document.getElementById(id).classList.toggle('hide',id!==v));window.scrollTo(0,0);}
+function showMonths(){showView('viewMonths');renderMonths();}
+function showMain(){showView('viewMain');}
 
 async function loadAll(manual){
   if(__punchBusy && !manual) return;
@@ -647,6 +736,11 @@ async function loadAll(manual){
   settings=Object.assign({cleanerName:'',employerName:'',rate:null,currency:'\u00a3',paidThrough:0},(await sGet(K.settings,true))||{});
   role=roleGet();
   if(!role){ const legacy=await sGet(K.role,false); if(legacy){ role=legacy; roleSet(legacy); } }
+  if(role==='cleaner'){
+    const acc=cleanerAccess(settings);
+    if(acc==='claim'){settings.cleanerDevice=myDev();await sSet(K.settings,settings,true);}
+    else if(acc!=='ok'){kickPhone();return;}
+  }
   if(role){document.getElementById('rolePick').classList.add('hide');document.getElementById('app').classList.remove('hide');}
   render(); if(manual)say('All up to date \u2713');
 }
@@ -947,6 +1041,7 @@ function getGPS(){
 }
 async function punch(){
   if(__punchBusy)return;
+  { const st=(await sGet(K.settings,true))||{}; if(cleanerAccess(st)!=='ok'&&cleanerAccess(st)!=='claim'){kickPhone();return;} }
   __punchBusy=true;
   const btn=document.getElementById('punchBtn'),tl=document.getElementById('punchTitle'),sb=document.getElementById('punchSub');
   const prevT=tl.textContent, prevS=sb.textContent;
@@ -1034,7 +1129,7 @@ async function renderSec(){
   if(role==='owner' && secEvents.length){
     card.classList.remove('hide');
     document.getElementById('secList').innerHTML=secEvents.slice(-5).reverse().map(e=>
-      '<div class="row"><div><div class="d">5 wrong PIN attempts</div><div class="t">'+new Date(e.t).toLocaleString()+' \u00b7 app was locked 10 min on that phone</div></div></div>'
+      '<div class="row"><div><div class="d">'+(e.type==='code5'?'5 wrong cleaner codes':'5 wrong PIN attempts')+'</div><div class="t">'+new Date(e.t).toLocaleString()+' \u00b7 app was locked 10 min on that phone</div></div></div>'
     ).join('');
   } else card.classList.add('hide');
 }
@@ -1171,6 +1266,178 @@ async function copySummary(){
   catch(e){prompt('Copy this summary:',txt);}
 }
 
+// ===== Past cleaners (archive) =====
+const ARCH_INDEX='tc:archives';
+const archKey=(id,part)=>'tc:arch:'+id+':'+part;
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+function aMoney(n,cur){return (cur||settings.currency)+(Math.round(n*100)/100).toLocaleString(undefined,{maximumFractionDigits:0});}
+function archTotals(ss,cs,ps,rate){
+  const mins=ss.filter(s=>s.out).reduce((a,s)=>a+(s.out-s.in)/6e4,0);
+  const ex=cs.reduce((a,c)=>a+c.amount,0);
+  const earned=rate?mins/60*rate+ex:0;
+  const paid=ps.reduce((a,p)=>a+p.amount,0);
+  return {mins,ex,earned,paid,balance:Math.max(0,Math.round((earned-paid)*100)/100)};
+}
+
+async function archiveCleaner(){
+  // always work from the latest cloud copy
+  sessions=(await sGet(K.sessions,true))||[];
+  charges=(await sGet(K.charges,true))||[];
+  payments=(await sGet(K.payments,true))||[];
+  profile=(await sGet(K.profile,true))||{};
+  active=await sGet(K.active,true);
+  settings=Object.assign(settings,(await sGet(K.settings,true))||{});
+  const name=settings.cleanerName||profile.name||'Cleaner';
+  if(active&&active.in){alert(name+' is still clocked in. Clock her out first (or wait for the shift to end), then try again.');return;}
+  if(!sessions.length&&!charges.length&&!payments.length&&!profile.name&&!profile.phone){
+    if(!confirm('There is no history to save. Clear the cleaner name so a new cleaner can register?'))return;
+  } else {
+    const t=archTotals(sessions,charges,payments,settings.rate);
+    const balLine=settings.rate?('\nOutstanding balance: '+money(t.balance)+(t.balance>0.005?' (you can still record her final payment later under Past cleaners)':'')):'';
+    if(!confirm('Save all of '+name+'\'s history and start fresh for a new cleaner?\n\n'+sessions.length+' visits, '+fmtH(t.mins)+' hours, '+payments.length+' payments'+balLine+'\n\nNothing is deleted. Her visits, payments, charges, details and documents move to "Past cleaners".'))return;
+    if(prompt('Type SAVE to confirm')!=='SAVE'){say('Cancelled, nothing changed.');return;}
+  }
+  say('Saving history…');
+  const id='a'+Date.now();
+  const t=archTotals(sessions,charges,payments,settings.rate);
+  const idImage=profile.idImage||null;
+  const prof=Object.assign({},profile); delete prof.idImage;
+  const pass=await sGet(K.docPassport,true), contr=await sGet(K.docContract,true);
+  const done=sessions.filter(s=>s.out).map(s=>s.in);
+  const entry={id,name,archivedAt:Date.now(),from:done.length?Math.min(...done):null,to:done.length?Math.max(...done):null,
+    visits:done.length,hours:Math.round(t.mins/6)/10,earned:t.earned,paid:t.paid,balance:t.balance,rate:settings.rate,currency:settings.currency,phone:prof.phone||''};
+  // 1. write the archive copy, check every part saved
+  const parts=[
+    [archKey(id,'data'),{sessions,charges,payments,profile:prof,rate:settings.rate,currency:settings.currency}],
+    [archKey(id,'idimage'),idImage],
+    [archKey(id,'passport'),pass||null],
+    [archKey(id,'contract'),contr||null]
+  ];
+  for(const [k,v] of parts){ if(!(await sSet(k,v,true))){say('Could not save the history, nothing was changed. Check internet and try again.',true);return;} }
+  const idx=(await sGet(ARCH_INDEX,true))||[];
+  idx.push(entry);
+  if(!(await sSet(ARCH_INDEX,idx,true))){say('Could not save the history, nothing was changed. Check internet and try again.',true);return;}
+  // 2. only now clear the live data for the new cleaner
+  await sSet(K.sessions,[],true); await sSet(K.charges,[],true); await sSet(K.payments,[],true);
+  await sSet(K.profile,{},true); await sSet(K.active,null,true);
+  await sSet(K.docPassport,null,true); await sSet(K.docContract,null,true);
+  const latest=(await sGet(K.settings,true))||{};
+  settings=Object.assign(settings,latest,{cleanerName:'',paidThrough:0,cleanerDevice:null});
+  await sSet(K.settings,settings,true);
+  sessions=[];charges=[];payments=[];profile={};active=null;__docsCache={};viewYM=null;
+  render();
+  alert(name+'\'s history is saved under Past cleaners, and her phone is now logged out.\n\nNext: choose a code for the new cleaner.');
+  await newCleanerCode(true);
+}
+
+async function showArchives(){
+  showView('viewArchives');
+  const el=document.getElementById('archList');
+  el.innerHTML='<div class="empty">Loading…</div>';
+  const idx=((await sGet(ARCH_INDEX,true))||[]).slice().sort((a,b)=>b.archivedAt-a.archivedAt);
+  if(!idx.length){el.innerHTML='<div class="empty">No past cleaners yet.</div>';return;}
+  el.innerHTML=idx.map(a=>{
+    const span=a.from?(new Date(a.from).toLocaleDateString(undefined,{month:'short',year:'numeric'})+' – '+new Date(a.to).toLocaleDateString(undefined,{month:'short',year:'numeric'})):'no visits';
+    const bal=a.rate?(a.balance>0.005?'<div class="t" style="color:var(--brick);font-weight:700">Owed '+aMoney(a.balance,a.currency)+'</div>':'<div class="t" style="color:var(--paid);font-weight:700">All paid ✓</div>'):'';
+    return '<div class="row" style="cursor:pointer" onclick="openArchive(\''+a.id+'\')"><div><div class="d">'+esc(a.name)+'</div><div class="t">'+span+' · '+a.visits+' visits · '+a.hours+' h</div>'+bal+'</div><span class="h" style="color:var(--gold)">open &#8250;</span></div>';
+  }).join('');
+}
+
+let __arch=null;
+async function openArchive(id){
+  showView('viewArchive');
+  const box=document.getElementById('archDetail');
+  box.innerHTML='<div class="card"><div class="empty">Loading…</div></div>';
+  const idx=(await sGet(ARCH_INDEX,true))||[];
+  const entry=idx.find(a=>a.id===id);
+  const data=await sGet(archKey(id,'data'),true);
+  if(!entry||!data){box.innerHTML='<div class="card"><div class="empty">Could not load this record. Check internet and try again.</div></div>';return;}
+  const [idImg,pass,contr]=await Promise.all([sGet(archKey(id,'idimage'),true),sGet(archKey(id,'passport'),true),sGet(archKey(id,'contract'),true)]);
+  __arch={entry,data,idImg,pass,contr};
+  renderArchive();
+}
+function renderArchive(){
+  const {entry,data,idImg,pass,contr}=__arch, cur=data.currency, rate=data.rate, p=data.profile||{};
+  const ss=(data.sessions||[]).filter(s=>s.out), cs=data.charges||[], ps=data.payments||[];
+  const t=archTotals(ss,cs,ps,rate);
+  let h='';
+  // summary
+  h+='<div class="card hero"><h2>'+esc(entry.name)+'</h2>'+
+     '<div class="bigrow"><span><span class="huge">'+fmtH(t.mins)+'</span> <span class="unit">hours</span></span>'+
+     (rate?'<span><span class="huge">'+aMoney(t.earned,cur)+'</span> <span class="unit">earned</span></span>':'')+'</div>'+
+     '<div class="breakdown">'+ss.length+' visits'+(entry.from?' · '+dLabel(entry.from)+' to '+dLabel(entry.to):'')+(rate?' · '+cur+rate+'/h':'')+'<br>Left on '+dLabel(entry.archivedAt)+'</div>'+
+     (rate?'<div class="unpaid'+(t.balance>0.005?'':' ok')+'">'+(t.balance>0.005?'Still owed: '+aMoney(t.balance,cur):'All paid up ✓')+' · paid '+aMoney(t.paid,cur)+'</div>':'')+'</div>';
+  // details
+  h+='<div class="card"><h2>Details &#128100;</h2><div style="font-size:14.5px;line-height:1.7"><b>'+esc(p.name||entry.name)+'</b>'+
+     (p.phone?'<br>📞 <a href="tel:'+esc(p.phone)+'">'+esc(p.phone)+'</a>':'')+(p.email?'<br>✉️ '+esc(p.email):'')+(p.address?'<br>🏠 '+esc(p.address):'')+'</div>';
+  if(idImg)h+='<img src="'+idImg+'" style="width:100%;border-radius:12px;border:1px solid var(--line);margin-top:10px" alt="ID">';
+  [['Passport',pass],['Signed contract',contr]].forEach(([lbl,d])=>{
+    if(d&&d.data){const pdf=d.type==='pdf';
+      h+='<div class="row"><div><div class="d">'+lbl+'</div><div class="t">saved '+dLabel(d.at)+'</div></div><a href="'+d.data+'" download="'+esc(entry.name.replace(/ /g,'_')+'_'+lbl.replace(/ /g,'_'))+(pdf?'.pdf':'.jpg')+'" style="color:var(--gold);font-weight:700;font-size:13px">download</a></div>';
+      if(!pdf)h+='<img src="'+d.data+'" style="width:100%;border-radius:12px;border:1px solid var(--line);margin:6px 0 10px" alt="'+lbl+'">';
+    }
+  });
+  h+='<button class="btn ghost" onclick="downloadArchiveCSV()">&#11015;&#65039; Download full history (CSV)</button></div>';
+  // final payment
+  h+='<div class="card"><h2>Payments &#128176;</h2>';
+  if(rate&&t.balance>0.005){
+    h+='<label>Date paid</label><input type="date" id="arDate"><div class="grid2"><div><label>Amount</label><input id="arAmt" type="number" inputmode="decimal" placeholder="'+Math.round(t.balance)+'"></div><div><label>Note (optional)</label><input id="arNote" placeholder="e.g. final pay"></div></div>'+
+       '<button class="btn primary" onclick="archPay(false)">Record payment</button><button class="btn ghost" onclick="archPay(true)">Pay full balance '+aMoney(t.balance,cur)+'</button>';
+  }
+  h+=ps.length?[...ps].sort((a,b)=>b.date-a.date).map(x=>'<div class="row"><div><div class="d">'+dLabel(x.date)+'</div>'+(x.note?'<div class="t">'+esc(x.note)+'</div>':'')+'</div><span class="h">'+aMoney(x.amount,cur)+'</span></div>').join(''):'<div class="empty">No payments recorded.</div>';
+  h+='</div>';
+  // by month
+  const byM={};
+  ss.forEach(s=>{const d=new Date(s.in),k=d.getFullYear()*100+d.getMonth();(byM[k]=byM[k]||{m:0,e:0}).m+=(s.out-s.in)/6e4;});
+  cs.forEach(c=>{const d=new Date(c.date),k=d.getFullYear()*100+d.getMonth();(byM[k]=byM[k]||{m:0,e:0}).e+=c.amount;});
+  const ks=Object.keys(byM).map(Number).sort((a,b)=>b-a);
+  if(ks.length){
+    h+='<div class="card"><h2>By month</h2><table class="months"><thead><tr><th>Month</th><th style="text-align:right">Hours</th><th style="text-align:right">Total</th></tr></thead><tbody>'+
+      ks.map(k=>{const v=byM[k];return '<tr><td>'+new Date(Math.floor(k/100),k%100,1).toLocaleDateString(undefined,{month:'long',year:'numeric'})+'</td><td class="num">'+fmtH(v.m)+'</td><td class="num">'+(rate?aMoney(v.m/60*rate+v.e,cur):'–')+'</td></tr>';}).join('')+'</tbody></table></div>';
+  }
+  // visits
+  h+='<div class="card"><h2>All visits</h2>'+(ss.length?[...ss].sort((a,b)=>b.in-a.in).map(s=>
+    '<div class="row"><div><div class="d">'+dLabel(s.in)+(s.manual?'<span class="badge added">added</span>':'')+'</div><div class="t">'+tLabel(s.in)+' – '+tLabel(s.out)+' · '+new Date(s.in).getFullYear()+'</div>'+(s.note?'<div class="note">📝 '+esc(s.note)+'</div>':'')+'</div><span class="h">'+fmtH((s.out-s.in)/6e4)+' h</span></div>').join(''):'<div class="empty">No visits.</div>');
+  if(cs.length)h+='<h2 style="margin-top:14px">Extra charges</h2>'+[...cs].sort((a,b)=>b.date-a.date).map(c=>'<div class="row"><div><div class="d">'+dLabel(c.date)+'</div><div class="t">'+esc(c.label)+'</div></div><span class="h">'+aMoney(c.amount,cur)+'</span></div>').join('');
+  h+='</div>';
+  document.getElementById('archDetail').innerHTML=h;
+}
+async function archPay(full){
+  const {entry}=__arch;
+  const data=(await sGet(archKey(entry.id,'data'),true))||__arch.data;
+  const t=archTotals((data.sessions||[]),data.charges||[],data.payments||[],data.rate);
+  let amt,when=Date.now(),note='Final payment';
+  if(full){ amt=t.balance; if(!confirm('Record a payment of '+aMoney(amt,data.currency)+' to '+entry.name+'?'))return; }
+  else{
+    amt=parseFloat(document.getElementById('arAmt').value);
+    if(!(amt>0)){alert('Enter an amount greater than zero.');return;}
+    const d=document.getElementById('arDate').value; if(d)when=new Date(d+'T12:00').getTime();
+    const n=document.getElementById('arNote').value.trim(); note=n||'';
+  }
+  const pay={id:'p'+Date.now(),date:when,amount:amt}; if(note)pay.note=note;
+  data.payments=(data.payments||[]).concat([pay]);
+  if(!(await sSet(archKey(entry.id,'data'),data,true))){alert('Could not save, check internet and try again.');return;}
+  const nt=archTotals(data.sessions||[],data.charges||[],data.payments,data.rate);
+  const idx=(await sGet(ARCH_INDEX,true))||[];
+  const e=idx.find(a=>a.id===entry.id); if(e){e.paid=nt.paid;e.balance=nt.balance;await sSet(ARCH_INDEX,idx,true);}
+  __arch.data=data; if(e)__arch.entry=e;
+  renderArchive();
+}
+function downloadArchiveCSV(){
+  const {entry,data}=__arch, rate=data.rate;
+  const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const iso=ts=>{const d=new Date(ts);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
+  const rows=[['Type','Date','Start','End','Hours','Amount','Note']];
+  (data.sessions||[]).filter(s=>s.out).sort((a,b)=>a.in-b.in).forEach(s=>{const hrs=(s.out-s.in)/36e5;rows.push(['Visit',iso(s.in),tLabel(s.in),tLabel(s.out),hrs.toFixed(2),rate?(hrs*rate).toFixed(2):'',(s.manual?'[added] ':'')+(s.note||'')]);});
+  (data.charges||[]).sort((a,b)=>a.date-b.date).forEach(c=>rows.push(['Extra charge',iso(c.date),'','','',c.amount.toFixed(2),c.label]));
+  (data.payments||[]).sort((a,b)=>a.date-b.date).forEach(p=>rows.push(['Payment',iso(p.date),'','','',(-p.amount).toFixed(2),p.note||'']));
+  const csv='﻿'+rows.map(r=>r.map(q).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='TidyTime_'+entry.name.replace(/\s+/g,'_')+'_history.csv';
+  document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
+}
+
 let __booted=false;
 function updateVerMode(){
   try{ var vm=document.getElementById('verMode'); if(vm){ vm.textContent = CLOUD_ON() ? '\u00b7 cloud synced \u2601\ufe0f' : '\u00b7 this phone only'; } }catch(e){}
@@ -1189,7 +1456,7 @@ else {
 let __recheck=0; const __ri=setInterval(function(){ __recheck++; updateVerMode(); removeBannerIfSynced(); if(CLOUD_ON()||__recheck>10) clearInterval(__ri); }, 1000);
 </script>
 <div id="verTag" style="text-align:center;color:#B2A98E;font-size:11px;font-weight:600;margin-top:26px;padding-bottom:6px">
-  TidyTime v15 <span id="verMode">· …</span>
+  TidyTime v16 <span id="verMode">· …</span>
 </div>
 </body>
 </html>
