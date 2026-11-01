@@ -100,7 +100,7 @@
   // ===== TidyTime cloud config =====
   // Paste the 6 values from your Firebase project below (Project settings > General > Your apps > SDK setup).
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-  import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyBCvfB_6TG8CadbcxOYXQZTi-UPtApP5oQ",
@@ -126,6 +126,7 @@
         const snap = await getDoc(ref(key));
         return snap.exists() ? snap.data().v : null;
       };
+      window.__tt.watch = (key, cb) => onSnapshot(ref(key), s => cb(s.exists() ? s.data().v : null), () => {});
       window.__tt.set = async (key, value) => {
         await setDoc(ref(key), { v:value, at:Date.now() });
         return true;
@@ -180,7 +181,7 @@
   <p>This phone is no longer linked to TidyTime.<br>If you work here, ask your employer for a new code.</p>
   <button class="rolebtn cleaner" onclick="kickBack()">OK</button>
 </div>
-<div class="overlay" id="rolePick">
+<div class="overlay hide" id="rolePick">
   <div class="logo">&#129529;</div>
   <h1>TidyTime</h1>
   <p>Hours made simple.<br>Who is using this phone? You choose once.</p>
@@ -387,6 +388,7 @@
       </div>
       <button class="btn primary" onclick="saveSettings()">Save settings</button>
       <button class="btn ghost" onclick="setHome()">&#127968; Set home location (use my current position)</button>
+      <button class="btn ghost" id="alertBtn" onclick="toggleAlerts()">&#128276; Turn on clock in alerts</button>
       <button class="btn ghost" onclick="changePin()">&#128274; Change employer PIN</button>
       <button class="btn ghost" onclick="newCleanerCode(false)">&#128241; New code for cleaner's phone</button>
       <div id="homeStatus" style="font-size:12.5px;color:var(--mut);margin-top:4px"></div>
@@ -449,13 +451,18 @@ function say(t,err){const m=document.getElementById('msg');m.textContent=t||'';m
 // --- storage adapter: Firebase cloud (shared across phones) first, else this-phone-only fallback ---
 function CLOUD_ON(){ return !!(window.__tt && window.__tt.ready); }
 async function sGet(k,sh){
-  if(CLOUD_ON()){ try{return await window.__tt.get(k);}catch(e){return null;} }
+  if(CLOUD_ON()){
+    for(let i=0;i<3;i++){ try{return await window.__tt.get(k);}catch(e){ await new Promise(r=>setTimeout(r,700*(i+1))); } }
+    // a failed read must never look like "no data", or the next save wipes the cloud copy
+    const err=new Error('read-failed'); err.ttRead=true; throw err;
+  }
   try{const v=localStorage.getItem((sh?'S:':'P:')+k);return v?JSON.parse(v):null;}catch(e){return null;}
 }
 async function sSet(k,v,sh){
   if(CLOUD_ON()){ try{return await window.__tt.set(k,v);}catch(e){return false;} }
   try{localStorage.setItem((sh?'S:':'P:')+k,JSON.stringify(v));return true;}catch(e){return false;}
 }
+window.addEventListener('unhandledrejection',e=>{ if(e.reason&&e.reason.ttRead){ e.preventDefault(); say('No connection right now, nothing was changed. Try again in a moment.',true); } });
 function ckGet(n){try{const m=document.cookie.match('(?:^|; )'+n+'=([^;]*)');return m?decodeURIComponent(m[1]):null;}catch(e){return null;}}
 function ckSet(n,v){try{if(v===null)document.cookie=n+'=; max-age=0; path=/';else document.cookie=n+'='+encodeURIComponent(v)+'; max-age=31536000; path=/; SameSite=Lax';}catch(e){}}
 function roleGet(){ let r=null; try{r=JSON.parse(localStorage.getItem('P:tc:role'));}catch(e){} if(!r)r=ckGet('tcrole'); return r||null; }
@@ -564,7 +571,8 @@ async function changePin(){
 // ===== Cleaner phone link: only the registered cleaner's phone sees the data =====
 function myDev(){
   let d=null; try{d=localStorage.getItem('P:ttdev');}catch(e){} if(!d)d=ckGet('ttdev');
-  if(!d){ d='d'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); try{localStorage.setItem('P:ttdev',d);}catch(e){} }
+  if(!d){ d='d'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+  try{localStorage.setItem('P:ttdev',d);}catch(e){} ckSet('ttdev',d);
   ckSet('ttdev',d); return d;
 }
 // 'ok' = this phone is the linked cleaner phone, 'code' = slot free, needs employer code,
@@ -604,7 +612,9 @@ async function startReg(r){
   profile=Object.assign(profile,(await sGet(K.profile,true))||{});
   if(r==='owner'){
     if(lockedNow()){showLock();return;}
-    if(settings.empPinHash){ askPin(()=>startRegInner('owner')); return; }
+    const trusted=(settings.ownerDevices||[]).includes(myDev());
+    if(settings.empPinHash && !trusted){ askPin(()=>ownerEnter()); return; }
+    if(settings.employerName){ ownerEnter(); return; }
     // no PIN yet: let the employer in, then immediately create one
     startRegInner('owner'); return;
   }
@@ -656,6 +666,24 @@ async function startRegInner(r){
       document.getElementById('regGo').innerHTML='Save &amp; start \u2794';
     }
   }
+}
+// employer already set up: remember this phone and go straight in, no form
+async function ownerEnter(){
+  const latest=(await sGet(K.settings,true))||{};
+  settings=Object.assign(settings,latest);
+  if(!settings.employerName){ startRegInner('owner'); return; }
+  await trustThisPhone();
+  role='owner'; roleSet(role);
+  ['rolePick','regScreen','pinScreen'].forEach(id=>document.getElementById(id).classList.add('hide'));
+  document.getElementById('app').classList.remove('hide');
+  await loadAll(false); setupAlerts();
+}
+async function trustThisPhone(){
+  const latest=(await sGet(K.settings,true))||{};
+  const list=latest.ownerDevices||[];
+  if(list.includes(myDev()))return;
+  latest.ownerDevices=list.concat([myDev()]).slice(-5);
+  if(await sSet(K.settings,latest,true)) settings=Object.assign(settings,latest);
 }
 function backToRoles(){document.getElementById('regScreen').classList.add('hide');document.getElementById('rolePick').classList.remove('hide');}
 async function freshSettings(){
@@ -714,6 +742,7 @@ async function finishReg(){
   }
   await sSet(K.settings,settings,true);
   role=pendingRole; roleSet(role); await sSet(K.role,role,false);
+  if(role==='owner'){ await trustThisPhone(); setupAlerts(); }
   document.getElementById('regScreen').classList.add('hide');
   document.getElementById('app').classList.remove('hide');
   render();
@@ -729,21 +758,30 @@ function showMain(){showView('viewMain');}
 async function loadAll(manual){
   if(__punchBusy && !manual) return;
   if(manual)say('Refreshing\u2026');
-  sessions=(await sGet(K.sessions,true))||[];
-  charges=(await sGet(K.charges,true))||[];
-  payments=(await sGet(K.payments,true))||[];
-  profile=(await sGet(K.profile,true))||{};
-  active=await sGet(K.active,true);
-  settings=Object.assign({cleanerName:'',employerName:'',rate:null,currency:'\u00a3',paidThrough:0},(await sGet(K.settings,true))||{});
+  let got;
+  try{
+    got=await Promise.all([K.sessions,K.charges,K.payments,K.profile,K.active,K.settings].map(k=>sGet(k,true)));
+  }catch(e){
+    // offline or flaky: keep the data already on screen, never blank it
+    role=role||roleGet();
+    if(role){document.getElementById('rolePick').classList.add('hide');document.getElementById('app').classList.remove('hide');render();}
+    else document.getElementById('rolePick').classList.remove('hide');
+    if(manual)say('No connection right now, showing the last data.',true);
+    return;
+  }
+  sessions=got[0]||[]; charges=got[1]||[]; payments=got[2]||[]; profile=got[3]||{}; active=got[4];
+  settings=Object.assign({cleanerName:'',employerName:'',rate:null,currency:'\u00a3',paidThrough:0},got[5]||{});
   role=roleGet();
+  if(!role && (settings.ownerDevices||[]).includes(myDev())){ role='owner'; roleSet('owner'); }
   if(!role){ const legacy=await sGet(K.role,false); if(legacy){ role=legacy; roleSet(legacy); } }
   if(role==='cleaner'){
     const acc=cleanerAccess(settings);
-    if(acc==='claim'){settings.cleanerDevice=myDev();await sSet(K.settings,settings,true);}
+    if(acc==='claim' && got[5]){const st=got[5];st.cleanerDevice=myDev();if(await sSet(K.settings,st,true))settings.cleanerDevice=st.cleanerDevice;}
     else if(acc!=='ok'){kickPhone();return;}
   }
   if(role){document.getElementById('rolePick').classList.add('hide');document.getElementById('app').classList.remove('hide');}
-  render(); if(manual)say('All up to date \u2713');
+  else document.getElementById('rolePick').classList.remove('hide');
+  render(); if(role==='owner')setupAlerts(); if(manual)say('All up to date \u2713');
 }
 
 function fmtH(m){return (m/60).toFixed(1);}
@@ -905,6 +943,7 @@ function render(){
       '<div class="row"><div><div class="d">'+dLabel(c.date)+'</div><div class="t">'+c.label.replace(/</g,'&lt;')+'</div></div>'+
       '<div style="display:flex;align-items:center;gap:4px"><span class="h">'+money(c.amount)+'</span><button class="del" onclick="delCharge(\''+c.id+'\')">&#10005;</button></div></div>'
     ).join(''):'<div class="empty">No extra charges in '+mlbl+'.</div>';
+    { const ab=document.getElementById('alertBtn'); if(ab) ab.innerHTML=alertsOn()?'&#128277; Turn off clock in alerts':'&#128276; Turn on clock in alerts'; }
     document.getElementById('homeStatus').textContent=(settings.homeLat?'\u2713 Home location is set':'Home location not set yet \u2014 tap the button while at home');
     document.getElementById('sOwner').value=settings.employerName||'';
     document.getElementById('sName').value=settings.cleanerName||'';
@@ -1209,19 +1248,19 @@ async function setHome(){
   const loc=await getGPS();
   if(!loc){say('Could not get your position \u2014 allow location access and try again.',true);return;}
   const latest=(await sGet(K.settings,true))||{};
-  settings=Object.assign(settings,latest);
-  settings.homeLat=loc.lat; settings.homeLng=loc.lng;
-  const ok=await sSet(K.settings,settings,true);
+  latest.homeLat=loc.lat; latest.homeLng=loc.lng;
+  const ok=await sSet(K.settings,latest,true);
+  if(ok)settings=Object.assign(settings,latest);
   say(ok?'Home location saved \u2713':'Could not save.',!ok);render();
 }
 async function saveSettings(){
   const latest=(await sGet(K.settings,true))||{};
-  settings=Object.assign({cleanerName:'',employerName:'',rate:null,currency:'\u00a3',paidThrough:0},settings,latest);
-  settings.employerName=document.getElementById('sOwner').value.trim();
-  settings.cleanerName=document.getElementById('sName').value.trim();
-  settings.rate=parseFloat(document.getElementById('sRate').value)||null;
-  settings.currency=document.getElementById('sCur').value;
-  const ok=await sSet(K.settings,settings,true);
+  const on=document.getElementById('sOwner').value.trim(), cn=document.getElementById('sName').value.trim();
+  if(on)latest.employerName=on; if(cn)latest.cleanerName=cn;
+  latest.rate=parseFloat(document.getElementById('sRate').value)||latest.rate||null;
+  latest.currency=document.getElementById('sCur').value;
+  const ok=await sSet(K.settings,latest,true);
+  if(ok)settings=Object.assign(settings,latest);
   say(ok?'Settings saved \u2713':'Could not save settings.',!ok);render();
 }
 
@@ -1464,6 +1503,37 @@ function downloadArchiveCSV(){
   document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
 }
 
+// ===== Clock in / out alerts (employer phone) =====
+let __alertWatch=null, __lastActive;
+function alertsOn(){ try{return localStorage.getItem('P:ttalerts')==='1';}catch(e){return false;} }
+async function notify(title,body){
+  try{ const reg=await navigator.serviceWorker.getRegistration(); if(reg){ reg.showNotification(title,{body,icon:'icon-192.png',badge:'icon-192.png',tag:'tt-punch',renotify:true,vibrate:[120,60,120]}); return; } }catch(e){}
+  try{ new Notification(title,{body,icon:'icon-192.png'}); }catch(e){}
+}
+function setupAlerts(){
+  if(role!=='owner'||!alertsOn()||__alertWatch||!(window.__tt&&window.__tt.watch)||!CLOUD_ON())return;
+  if(!('Notification' in window)||Notification.permission!=='granted')return;
+  __alertWatch=window.__tt.watch(K.active,a=>{
+    const was=__lastActive; __lastActive=a&&a.in?a:null;
+    if(was===undefined)return; // first reading, just remember it
+    const who=settings.cleanerName||'Cleaner';
+    if(__lastActive&&!was) notify(who+' clocked in','At '+tLabel(__lastActive.in));
+    else if(!__lastActive&&was) notify(who+' clocked out','At '+tLabel(Date.now())+' after '+fmtH((Date.now()-was.in)/6e4)+' h');
+    if(!__punchBusy){active=__lastActive;render();}
+  });
+}
+async function toggleAlerts(){
+  if(alertsOn()){
+    try{localStorage.setItem('P:ttalerts','0');}catch(e){}
+    if(__alertWatch){__alertWatch();__alertWatch=null;__lastActive=undefined;}
+    say('Clock in alerts off'); render(); return;
+  }
+  if(!('Notification' in window)){alert('This phone does not support notifications.');return;}
+  const p=await Notification.requestPermission();
+  if(p!=='granted'){alert('Notifications are blocked. Allow them for TidyTime in your phone settings, then try again.');return;}
+  try{localStorage.setItem('P:ttalerts','1');}catch(e){}
+  setupAlerts(); say('Clock in alerts on \u2713'); render();
+}
 let __booted=false;
 function updateVerMode(){
   try{ var vm=document.getElementById('verMode'); if(vm){ vm.textContent = CLOUD_ON() ? '\u00b7 cloud synced \u2601\ufe0f' : '\u00b7 this phone only'; } }catch(e){}
@@ -1471,7 +1541,9 @@ function updateVerMode(){
 function removeBannerIfSynced(){
   if(CLOUD_ON()){ var b=document.getElementById('ttBanner'); if(b) b.remove(); }
 }
-function bootTidyTime(){ if(__booted)return; __booted=true; if(lockedNow()){showLock();return;} updateVerMode(); loadAll(false).then(()=>{modeBanner();removeBannerIfSynced();}); setInterval(()=>loadAll(false),60000); }
+(function(){ const r=roleGet(); if(r){ document.getElementById('app').classList.remove('hide'); } })();
+try{ if(navigator.storage&&navigator.storage.persist) navigator.storage.persist(); }catch(e){}
+function bootTidyTime(){ if(__booted)return; __booted=true; setTimeout(()=>{ if(role==='owner')setupAlerts(); },1500); if(lockedNow()){showLock();return;} updateVerMode(); loadAll(false).then(()=>{modeBanner();removeBannerIfSynced();}); setInterval(()=>loadAll(false),60000); }
 // wait for the real connection result before first load, so writes go to the cloud
 if(window.__tt && (window.__tt.ready || (window.__tt.configured===false))){ bootTidyTime(); }
 else {
@@ -1482,7 +1554,7 @@ else {
 let __recheck=0; const __ri=setInterval(function(){ __recheck++; updateVerMode(); removeBannerIfSynced(); if(CLOUD_ON()||__recheck>10) clearInterval(__ri); }, 1000);
 </script>
 <div id="verTag" style="text-align:center;color:#B2A98E;font-size:11px;font-weight:600;margin-top:26px;padding-bottom:6px">
-  TidyTime v17 <span id="verMode">· …</span>
+  TidyTime v18 <span id="verMode">· …</span>
 </div>
 <script>
 if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));}
