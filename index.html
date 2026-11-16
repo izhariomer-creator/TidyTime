@@ -1320,6 +1320,10 @@ function archTotals(ss,cs,ps,rate){
 }
 
 async function archiveCleaner(){
+  try{ await archiveCleanerRun(); }
+  catch(e){ console.error(e); alert('Could not finish, nothing was changed. Check internet and try again.'+(e&&e.message&&!e.ttRead?'\n\n('+e.message+')':'')); }
+}
+async function archiveCleanerRun(){
   // always work from the latest cloud copy
   sessions=(await sGet(K.sessions,true))||[];
   charges=(await sGet(K.charges,true))||[];
@@ -1328,14 +1332,30 @@ async function archiveCleaner(){
   active=await sGet(K.active,true);
   settings=Object.assign(settings,(await sGet(K.settings,true))||{});
   const name=settings.cleanerName||profile.name||'Cleaner';
-  if(active&&active.in){alert(name+' is still clocked in. Clock her out first (or wait for the shift to end), then try again.');return;}
+  if(active&&active.in){
+    // v19: employer can close a shift she left open, instead of being blocked
+    const hrs=(Date.now()-active.in)/36e5, since=new Date(active.in).toLocaleString();
+    if(hrs>12){
+      if(!confirm(name+' is still clocked in since '+since+'. Looks like she forgot to clock out.\n\nRemove that open clock in and carry on?'))return;
+    } else {
+      if(!confirm(name+' is still clocked in since '+since+'.\n\nClock her out now (saved as a visit) and carry on?'))return;
+      const sess={id:'s'+active.in,in:active.in,out:Date.now(),note:'Clocked out by employer'};
+      if(active.inLoc)sess.inLoc=active.inLoc;
+      sessions.push(sess);
+      if(!(await sSet(K.sessions,sessions,true))){say('Could not save, nothing was changed. Check internet and try again.',true);return;}
+    }
+    if(!(await sSet(K.active,null,true))){say('Could not save, nothing was changed. Check internet and try again.',true);return;}
+    active=null;
+  }
   if(!sessions.length&&!charges.length&&!payments.length&&!profile.name&&!profile.phone){
     if(!confirm('There is no history to save. Clear the cleaner name so a new cleaner can register?'))return;
   } else {
     const t=archTotals(sessions,charges,payments,settings.rate);
     const balLine=settings.rate?('\nOutstanding balance: '+money(t.balance)+(t.balance>0.005?' (you can still record her final payment later under Past cleaners)':'')):'';
     if(!confirm('Save all of '+name+'\'s history and start fresh for a new cleaner?\n\n'+sessions.length+' visits, '+fmtH(t.mins)+' hours, '+payments.length+' payments'+balLine+'\n\nNothing is deleted. Her visits, payments, charges, details and documents move to "Past cleaners".'))return;
-    if(prompt('Type SAVE to confirm')!=='SAVE'){say('Cancelled, nothing changed.');return;}
+    const typed=prompt('Type SAVE to confirm');
+    if(typed===null){say('Cancelled, nothing changed.');return;}
+    if(typed.trim().toUpperCase()!=='SAVE'){alert('You typed "'+typed+'". Please type the word SAVE, nothing was changed.');return;}
   }
   say('Saving history…');
   const id='a'+Date.now();
@@ -1554,7 +1574,7 @@ else {
 let __recheck=0; const __ri=setInterval(function(){ __recheck++; updateVerMode(); removeBannerIfSynced(); if(CLOUD_ON()||__recheck>10) clearInterval(__ri); }, 1000);
 </script>
 <div id="verTag" style="text-align:center;color:#B2A98E;font-size:11px;font-weight:600;margin-top:26px;padding-bottom:6px">
-  TidyTime v18 <span id="verMode">· …</span>
+  TidyTime v19 <span id="verMode">· …</span>
 </div>
 <script>
 if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));}

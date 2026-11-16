@@ -1,6 +1,6 @@
 // TidyTime service worker: makes the app installable and opens it offline.
 // Firebase and other outside traffic is never touched, so live sync works as before.
-const CACHE = 'tidytime-v18';
+const CACHE = 'tidytime-v19';
 const SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
